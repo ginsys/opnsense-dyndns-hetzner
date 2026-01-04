@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opnsense-dyndns-hetzner
+  labels:
+    app: opnsense-dyndns-hetzner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opnsense-dyndns-hetzner
+  template:
+    metadata:
+      labels:
+        app: opnsense-dyndns-hetzner
+    spec:
+      containers:
+        - name: opnsense-dyndns-hetzner
+          image: opnsense-dyndns-hetzner:latest
+          args:
+            - --config
+            - /etc/opnsense-dyndns-hetzner/config.yaml
+          envFrom:
+            - secretRef:
+                name: opnsense-dyndns-hetzner-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/opnsense-dyndns-hetzner
+              readOnly: true
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+      volumes:
+        - name: config
+          configMap:
+            name: opnsense-dyndns-hetzner-config

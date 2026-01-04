@@ -1,0 +1,26 @@
+opnsense:
+  url: "https://rigel.office.ginsys.net/api"
+  key: "${OPNSENSE_API_KEY}"
+  secret: "${OPNSENSE_API_SECRET}"
+  interfaces:
+    # Logical name -> OPNsense interface name
+    # To find interface names, see README.md
+    telenet: "wan"
+    telenet2: "opt1"
+
+hetzner:
+  token: "${HETZNER_DNS_TOKEN}"
+  zone: "ginsys.net"
+  ttl: 300
+
+settings:
+  interval: 300  # seconds between checks
+  dry_run: false
+
+records:
+  - hostname: office
+    interfaces: [telenet2]
+  - hostname: stuiver
+    interfaces: [telenet]
+  - hostname: st32
+    interfaces: [telenet, telenet2]

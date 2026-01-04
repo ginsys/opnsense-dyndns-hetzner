@@ -1,0 +1,39 @@
+# Example configuration for hetzner-dyndns
+# Copy this file to config.yaml and adjust for your environment
+
+opnsense:
+  # OPNsense API base URL
+  url: "https://opnsense.local/api"
+  # API credentials (set via environment variables)
+  key: "${OPNSENSE_API_KEY}"
+  secret: "${OPNSENSE_API_SECRET}"
+  # Map logical names to OPNsense interface names
+  # Use: curl -u "key:secret" https://opnsense/api/diagnostics/interface/getInterfaceConfig | jq 'keys'
+  interfaces:
+    telenet: "wan"
+    telenet2: "opt1"
+
+hetzner:
+  # Hetzner DNS API token (set via environment variable)
+  token: "${HETZNER_DNS_TOKEN}"
+  # DNS zone to manage
+  zone: "example.com"
+  # TTL for A records (in seconds)
+  ttl: 300
+
+settings:
+  # Interval between update checks (in seconds)
+  interval: 300
+  # Set to true to log changes without making them
+  dry_run: false
+
+records:
+  # Each record defines a hostname and which interfaces provide its IPs
+  - hostname: office
+    interfaces: [telenet2]    # Single IP from telenet2
+
+  - hostname: home
+    interfaces: [telenet]     # Single IP from telenet
+
+  - hostname: server
+    interfaces: [telenet, telenet2]  # Two A records, one per interface
