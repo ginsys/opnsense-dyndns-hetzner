@@ -1,248 +1,219 @@
-"""Hetzner Cloud DNS API client for managing A records."""
+"""Hetzner Cloud DNS client using hcloud library."""
 
-from dataclasses import dataclass
+from __future__ import annotations
 
-import httpx
 import structlog
+from hcloud import APIException
+from hcloud import Client as HCloudClient
+from hcloud.zones.client import BoundZone, BoundZoneRRSet
+from hcloud.zones.domain import ZoneRecord
 
 from .config import HetznerConfig
+from .ratelimit import RateLimiter
+from .retry import retry_with_backoff
 
 logger = structlog.get_logger()
 
-HETZNER_DNS_API_BASE = "https://dns.hetzner.com/api/v1"
+# Retryable HTTP status codes
+RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
 
 
-@dataclass
-class DNSRecord:
-    """Represents a DNS A record."""
+class HetznerAPIError(Exception):
+    """Custom exception for Hetzner API errors with retry support."""
 
-    id: str
-    name: str
-    type: str
-    value: str
-    ttl: int
-    zone_id: str
+    def __init__(self, message: str, status_code: int | str | None = None) -> None:
+        super().__init__(message)
+        # Normalize status_code to int for retryable checks
+        if isinstance(status_code, str):
+            try:
+                self.status_code: int | None = int(status_code)
+            except ValueError:
+                self.status_code = None
+        else:
+            self.status_code = status_code
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Check if exception is retryable."""
+    if isinstance(exc, APIException):
+        return exc.code in RETRYABLE_STATUS_CODES
+    if isinstance(exc, HetznerAPIError):
+        return exc.status_code in RETRYABLE_STATUS_CODES
+    return False
 
 
 class HetznerDNSClient:
-    """Client for Hetzner Cloud DNS API."""
+    """Client for Hetzner Cloud DNS using hcloud library.
+
+    Uses RRSet-based operations for managing A records, with rate limiting
+    and retry logic for API resilience.
+    """
 
     def __init__(self, config: HetznerConfig) -> None:
+        """Initialize Hetzner DNS client.
+
+        Args:
+            config: Hetzner configuration with token, zone, and TTL
+        """
         self.config = config
-        self._client = httpx.Client(
-            headers={
-                "Auth-API-Token": config.token,
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
-        )
-        self._zone_id: str | None = None
+        self._client = HCloudClient(token=config.token)
+        self._zones = self._client.zones
+        self._zone_cache: dict[str, BoundZone] = {}
+        self._rate_limiter = RateLimiter(requests_per_minute=30)
 
     def close(self) -> None:
-        """Close the HTTP client."""
-        self._client.close()
+        """Close the client (no-op for hcloud, but keeps interface consistent)."""
+        pass
 
-    def __enter__(self) -> "HetznerDNSClient":
+    def __enter__(self) -> HetznerDNSClient:
         return self
 
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def _get_zone_id(self) -> str:
-        """Get the zone ID for the configured zone name."""
-        if self._zone_id is not None:
-            return self._zone_id
-
-        url = f"{HETZNER_DNS_API_BASE}/zones"
-        logger.debug("Fetching zones from Hetzner DNS", url=url)
-
-        response = self._client.get(url, params={"name": self.config.zone})
-        response.raise_for_status()
-
-        data = response.json()
-        zones = data.get("zones", [])
-
-        for zone in zones:
-            if zone["name"] == self.config.zone:
-                self._zone_id = zone["id"]
-                logger.debug("Found zone", zone=self.config.zone, zone_id=self._zone_id)
-                return self._zone_id
-
-        raise ValueError(f"Zone '{self.config.zone}' not found in Hetzner DNS")
-
-    def get_a_records(self, hostname: str) -> list[DNSRecord]:
-        """
-        Get all A records for a hostname.
-
-        Args:
-            hostname: The hostname (without zone suffix)
+    def _get_zone(self) -> BoundZone:
+        """Get zone by name (cached).
 
         Returns:
-            List of DNSRecord objects for the hostname
+            BoundZone object for the configured zone
+
+        Raises:
+            ValueError: If zone not found
         """
-        zone_id = self._get_zone_id()
-        url = f"{HETZNER_DNS_API_BASE}/records"
+        name = self.config.zone
+        if name not in self._zone_cache:
+            self._rate_limiter.wait()
+            try:
+                zones = self._zones.get_all(name=name)
+            except APIException as e:
+                logger.error("Failed to get zone", zone=name, error=str(e))
+                raise HetznerAPIError(f"Failed to get zone: {e}", status_code=e.code) from e
 
-        response = self._client.get(url, params={"zone_id": zone_id})
-        response.raise_for_status()
+            if not zones:
+                raise ValueError(f"Zone '{name}' not found in Hetzner DNS")
+            self._zone_cache[name] = zones[0]
+            logger.debug("Cached zone", zone=name, zone_id=zones[0].id)
 
-        data = response.json()
-        records = data.get("records", [])
+        return self._zone_cache[name]
 
-        result = []
-        for record in records:
-            if record["type"] == "A" and record["name"] == hostname:
-                result.append(
-                    DNSRecord(
-                        id=record["id"],
-                        name=record["name"],
-                        type=record["type"],
-                        value=record["value"],
-                        ttl=record.get("ttl", self.config.ttl),
-                        zone_id=record["zone_id"],
-                    )
-                )
-
-        logger.debug("Found A records", hostname=hostname, count=len(result))
-        return result
-
-    def create_a_record(self, hostname: str, ip: str) -> DNSRecord:
-        """
-        Create a new A record.
+    def _get_a_rrset(self, hostname: str) -> BoundZoneRRSet | None:
+        """Get A record RRSet for hostname.
 
         Args:
-            hostname: The hostname (without zone suffix)
-            ip: The IPv4 address
+            hostname: Record name (without zone suffix)
 
         Returns:
-            The created DNSRecord
+            BoundZoneRRSet if exists, None otherwise
         """
-        zone_id = self._get_zone_id()
-        url = f"{HETZNER_DNS_API_BASE}/records"
+        zone = self._get_zone()
+        self._rate_limiter.wait()
 
-        payload = {
-            "zone_id": zone_id,
-            "type": "A",
-            "name": hostname,
-            "value": ip,
-            "ttl": self.config.ttl,
-        }
+        try:
+            rrsets = self._zones.get_rrset_all(zone, name=hostname, type=["A"])
+        except APIException as e:
+            logger.error("Failed to get RRSet", hostname=hostname, error=str(e))
+            raise HetznerAPIError(f"Failed to get RRSet: {e}", status_code=e.code) from e
 
-        logger.info("Creating A record", hostname=hostname, ip=ip, ttl=self.config.ttl)
-        response = self._client.post(url, json=payload)
-        response.raise_for_status()
+        return rrsets[0] if rrsets else None
 
-        data = response.json()
-        record = data["record"]
-
-        return DNSRecord(
-            id=record["id"],
-            name=record["name"],
-            type=record["type"],
-            value=record["value"],
-            ttl=record.get("ttl", self.config.ttl),
-            zone_id=record["zone_id"],
-        )
-
-    def update_a_record(self, record_id: str, hostname: str, ip: str) -> DNSRecord:
-        """
-        Update an existing A record.
+    def get_a_record_ips(self, hostname: str) -> set[str]:
+        """Get current A record IPs for hostname.
 
         Args:
-            record_id: The record ID to update
-            hostname: The hostname (without zone suffix)
-            ip: The new IPv4 address
+            hostname: Record name (without zone suffix)
 
         Returns:
-            The updated DNSRecord
+            Set of IP addresses for the hostname
         """
-        zone_id = self._get_zone_id()
-        url = f"{HETZNER_DNS_API_BASE}/records/{record_id}"
+        rrset = self._get_a_rrset(hostname)
+        if not rrset or not rrset.records:
+            return set()
+        return {rec.value for rec in rrset.records}
 
-        payload = {
-            "zone_id": zone_id,
-            "type": "A",
-            "name": hostname,
-            "value": ip,
-            "ttl": self.config.ttl,
-        }
-
-        logger.info("Updating A record", hostname=hostname, ip=ip, record_id=record_id)
-        response = self._client.put(url, json=payload)
-        response.raise_for_status()
-
-        data = response.json()
-        record = data["record"]
-
-        return DNSRecord(
-            id=record["id"],
-            name=record["name"],
-            type=record["type"],
-            value=record["value"],
-            ttl=record.get("ttl", self.config.ttl),
-            zone_id=record["zone_id"],
-        )
-
-    def delete_a_record(self, record_id: str) -> None:
-        """
-        Delete an A record.
-
-        Args:
-            record_id: The record ID to delete
-        """
-        url = f"{HETZNER_DNS_API_BASE}/records/{record_id}"
-
-        logger.info("Deleting A record", record_id=record_id)
-        response = self._client.delete(url)
-        response.raise_for_status()
-
+    @retry_with_backoff(
+        max_retries=3,
+        retryable_exceptions=(HetznerAPIError,),
+        should_retry=_is_retryable,
+    )
     def sync_a_records(self, hostname: str, desired_ips: list[str], dry_run: bool = False) -> bool:
-        """
-        Synchronize A records for a hostname to match desired IPs.
+        """Sync A records for hostname to match desired IPs.
 
-        This will:
-        - Create records for IPs that don't exist
-        - Update records to match desired IPs
-        - Delete extra records
+        Uses RRSet operations to efficiently update records:
+        - Creates new RRSet if none exists
+        - Updates existing RRSet if IPs differ
+        - Deletes RRSet if no IPs desired
 
         Args:
-            hostname: The hostname (without zone suffix)
-            desired_ips: List of IPv4 addresses to set
-            dry_run: If True, don't make changes, just log
+            hostname: Record name (without zone suffix)
+            desired_ips: List of desired IP addresses
+            dry_run: If True, log changes without applying
 
         Returns:
-            True if changes were made (or would be made in dry_run), False otherwise
+            True if changes were made (or would be made in dry_run)
         """
-        current_records = self.get_a_records(hostname)
-        current_ips = {r.value for r in current_records}
-        desired_ips_set = set(desired_ips)
+        zone = self._get_zone()
+        rrset = self._get_a_rrset(hostname)
 
-        # Check if any changes needed
-        if current_ips == desired_ips_set:
-            logger.debug(
-                "No changes needed",
-                hostname=hostname,
-                current_ips=sorted(current_ips),
-            )
+        current_ips: set[str] = set()
+        if rrset and rrset.records:
+            current_ips = {rec.value for rec in rrset.records}
+
+        desired_set = set(desired_ips)
+
+        if current_ips == desired_set:
+            logger.debug("No changes needed", hostname=hostname, ips=sorted(current_ips))
             return False
 
         logger.info(
             "Syncing A records",
             hostname=hostname,
-            current_ips=sorted(current_ips),
-            desired_ips=sorted(desired_ips_set),
+            current=sorted(current_ips),
+            desired=sorted(desired_set),
             dry_run=dry_run,
         )
 
         if dry_run:
             return True
 
-        # Strategy: delete all existing, create new
-        # This is simpler than trying to match/update individual records
-        for record in current_records:
-            self.delete_a_record(record.id)
+        self._rate_limiter.wait()
 
-        for ip in sorted(desired_ips):  # Sort for deterministic order
-            self.create_a_record(hostname, ip)
+        try:
+            if not desired_ips:
+                # Delete RRSet if no IPs desired
+                if rrset:
+                    self._zones.delete_rrset(rrset)
+                    logger.info("Deleted A record", hostname=hostname)
+            elif rrset:
+                # Update existing RRSet
+                records = [ZoneRecord(value=ip) for ip in sorted(desired_ips)]
+                self._zones.set_rrset_records(rrset, records)
+                logger.info("Updated A record", hostname=hostname, ips=sorted(desired_ips))
+            else:
+                # Create new RRSet
+                records = [ZoneRecord(value=ip) for ip in sorted(desired_ips)]
+                self._zones.create_rrset(
+                    zone,
+                    name=hostname,
+                    type="A",
+                    ttl=self.config.ttl,
+                    records=records,
+                )
+                logger.info("Created A record", hostname=hostname, ips=sorted(desired_ips))
+        except APIException as e:
+            logger.error("Failed to sync A records", hostname=hostname, error=str(e))
+            raise HetznerAPIError(f"Failed to sync A records: {e}", status_code=e.code) from e
 
         return True
+
+    def health_check(self) -> bool:
+        """Check if Hetzner API is accessible.
+
+        Returns:
+            True if API is accessible and zone exists
+        """
+        try:
+            self._get_zone()
+            return True
+        except Exception as e:
+            logger.error("Hetzner health check failed", error=str(e))
+            return False

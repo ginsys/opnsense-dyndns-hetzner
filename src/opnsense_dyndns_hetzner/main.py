@@ -1,16 +1,21 @@
 """Main entry point for opnsense-dyndns-hetzner."""
 
+from __future__ import annotations
+
 import argparse
 import signal
 import sys
 import time
+from http.server import HTTPServer
 from pathlib import Path
 
 import structlog
 
 from .config import Config, load_config
+from .health import start_health_server
 from .hetzner import HetznerDNSClient
 from .opnsense import OPNsenseClient
+from .verify import verify_a_records
 
 
 def configure_logging(level: str) -> None:
@@ -102,8 +107,8 @@ def run_update(
     # Process each record
     for record in config.records:
         # Gather IPs for this record's interfaces
-        desired_ips = []
-        missing_interfaces = []
+        desired_ips: list[str] = []
+        missing_interfaces: list[str] = []
 
         for iface in record.interfaces:
             if iface in interface_ips:
@@ -118,6 +123,8 @@ def run_update(
                 missing=missing_interfaces,
             )
 
+        desired_ips = sorted(set(desired_ips))
+
         if not desired_ips:
             logger.warning(
                 "No IPs available for record, skipping",
@@ -127,7 +134,17 @@ def run_update(
 
         # Sync DNS records
         try:
-            hetzner.sync_a_records(record.hostname, desired_ips, dry_run=dry_run)
+            changed = hetzner.sync_a_records(record.hostname, desired_ips, dry_run=dry_run)
+
+            # Verify DNS if changes were made (and not dry run)
+            if changed and not dry_run:
+                # Wait for DNS propagation before verification
+                time.sleep(config.settings.verify_delay)
+                verify_a_records(
+                    record.hostname,
+                    config.hetzner.zone,
+                    set(desired_ips),
+                )
         except Exception as e:
             logger.error(
                 "Failed to sync DNS records",
@@ -158,16 +175,37 @@ def main() -> None:
         interval=config.settings.interval,
         dry_run=dry_run,
         record_count=len(config.records),
+        health_port=config.settings.health_port,
     )
 
     shutdown = GracefulShutdown()
+    health_server: HTTPServer | None = None
 
     with OPNsenseClient(config.opnsense) as opnsense, HetznerDNSClient(config.hetzner) as hetzner:
+        # Start health server if configured
+        if config.settings.health_port:
+
+            def ready_check() -> bool:
+                return opnsense.health_check(timeout=2.0) and hetzner.health_check()
+
+            health_server = start_health_server(config.settings.health_port, ready_check)
+
+        iteration = 0
         while not shutdown.should_exit:
+            iteration += 1
+            logger.info("Starting update cycle", iteration=iteration)
+
             run_update(config, opnsense, hetzner, dry_run)
 
             if args.once:
+                logger.info("Single run complete, exiting")
                 break
+
+            logger.info(
+                "Update cycle complete, sleeping",
+                iteration=iteration,
+                next_check_seconds=config.settings.interval,
+            )
 
             # Sleep with interrupt checking
             for _ in range(config.settings.interval):
@@ -175,7 +213,10 @@ def main() -> None:
                     break
                 time.sleep(1)
 
-    logger.info("Shutting down")
+        if health_server:
+            health_server.shutdown()
+
+    logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":

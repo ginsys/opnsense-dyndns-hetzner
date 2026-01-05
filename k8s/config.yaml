@@ -2,6 +2,7 @@ opnsense:
   url: "https://rigel.office.ginsys.net/api"
   key: "${OPNSENSE_API_KEY}"
   secret: "${OPNSENSE_API_SECRET}"
+  verify_ssl: true
   interfaces:
     # Logical name -> OPNsense interface name
     # To find interface names, see README.md
@@ -9,13 +10,15 @@ opnsense:
     telenet2: "opt1"
 
 hetzner:
-  token: "${HETZNER_DNS_TOKEN}"
+  token: "${HCLOUD_TOKEN}"
   zone: "ginsys.net"
   ttl: 300
 
 settings:
   interval: 300  # seconds between checks
   dry_run: false
+  health_port: 8080  # Enable health endpoints for K8s probes
+  verify_delay: 2.0  # Seconds to wait before DNS verification
 
 records:
   - hostname: office

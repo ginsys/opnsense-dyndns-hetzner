@@ -14,6 +14,9 @@ class OPNsenseConfig(BaseModel):
     url: str = Field(description="Base URL for OPNsense API (e.g., https://opnsense.local/api)")
     key: str = Field(description="API key")
     secret: str = Field(description="API secret")
+    verify_ssl: bool = Field(
+        default=True, description="Verify SSL certificates (set False for self-signed)"
+    )
     interfaces: dict[str, str] = Field(
         description="Mapping of logical names to OPNsense interface names"
     )
@@ -22,7 +25,7 @@ class OPNsenseConfig(BaseModel):
 class HetznerConfig(BaseModel):
     """Hetzner Cloud DNS configuration."""
 
-    token: str = Field(description="Hetzner Cloud API token")
+    token: str = Field(description="Hetzner Cloud API token (HCLOUD_TOKEN)")
     zone: str = Field(description="DNS zone name (e.g., example.com)")
     ttl: int = Field(default=300, description="TTL for DNS records in seconds")
 
@@ -32,6 +35,10 @@ class SettingsConfig(BaseModel):
 
     interval: int = Field(default=300, description="Interval between checks in seconds")
     dry_run: bool = Field(default=False, description="If true, don't make changes")
+    health_port: int | None = Field(
+        default=None, description="HTTP health endpoint port (optional)"
+    )
+    verify_delay: float = Field(default=2.0, description="Seconds to wait before DNS verification")
 
 
 class RecordConfig(BaseModel):

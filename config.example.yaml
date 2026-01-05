@@ -1,4 +1,4 @@
-# Example configuration for hetzner-dyndns
+# Example configuration for opnsense-dyndns-hetzner
 # Copy this file to config.yaml and adjust for your environment
 
 opnsense:
@@ -7,6 +7,8 @@ opnsense:
   # API credentials (set via environment variables)
   key: "${OPNSENSE_API_KEY}"
   secret: "${OPNSENSE_API_SECRET}"
+  # Set to false for self-signed certificates
+  verify_ssl: true
   # Map logical names to OPNsense interface names
   # Use: curl -u "key:secret" https://opnsense/api/diagnostics/interface/getInterfaceConfig | jq 'keys'
   interfaces:
@@ -14,8 +16,9 @@ opnsense:
     telenet2: "opt1"
 
 hetzner:
-  # Hetzner DNS API token (set via environment variable)
-  token: "${HETZNER_DNS_TOKEN}"
+  # Hetzner Cloud API token (new hcloud API, not legacy dns.hetzner.com)
+  # Set via environment variable HCLOUD_TOKEN
+  token: "${HCLOUD_TOKEN}"
   # DNS zone to manage
   zone: "example.com"
   # TTL for A records (in seconds)
@@ -26,6 +29,11 @@ settings:
   interval: 300
   # Set to true to log changes without making them
   dry_run: false
+  # HTTP health endpoint port (optional, for Kubernetes probes)
+  # Set to null to disable, or a port number like 8080 to enable
+  health_port: null
+  # Seconds to wait before DNS verification after update
+  verify_delay: 2.0
 
 records:
   # Each record defines a hostname and which interfaces provide its IPs

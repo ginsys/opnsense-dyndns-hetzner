@@ -11,6 +11,9 @@ This tool queries OPNsense for WAN interface IP addresses and updates A records 
 - Configurable update interval
 - Dry-run mode for testing
 - Only updates DNS when IPs actually change
+- DNS verification after updates
+- Rate limiting and retry with exponential backoff
+- Optional health endpoints for Kubernetes
 
 ## Configuration
 
@@ -21,18 +24,21 @@ opnsense:
   url: "https://opnsense.local/api"
   key: "${OPNSENSE_API_KEY}"        # From environment variable
   secret: "${OPNSENSE_API_SECRET}"  # From environment variable
+  verify_ssl: true                  # Set false for self-signed certs
   interfaces:
     telenet: "wan"      # logical name -> OPNsense interface name
     telenet2: "opt1"
 
 hetzner:
-  token: "${HETZNER_DNS_TOKEN}"     # From environment variable
+  token: "${HCLOUD_TOKEN}"          # Hetzner Cloud API token
   zone: "example.com"
   ttl: 300
 
 settings:
-  interval: 300    # seconds between checks
+  interval: 300       # seconds between checks
   dry_run: false
+  health_port: null   # Set to 8080 to enable health endpoints
+  verify_delay: 2.0   # seconds to wait before DNS verification
 
 records:
   - hostname: office
@@ -40,6 +46,14 @@ records:
   - hostname: server
     interfaces: [telenet, telenet2] # Both interfaces -> 2 A records
 ```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `OPNSENSE_API_KEY` | OPNsense API key |
+| `OPNSENSE_API_SECRET` | OPNsense API secret |
+| `HCLOUD_TOKEN` | Hetzner Cloud API token |
 
 ### Finding OPNsense Interface Names
 
@@ -85,7 +99,7 @@ kubectl create secret generic opnsense-dyndns-hetzner-secrets \
   --namespace opnsense-dyndns-hetzner \
   --from-literal=OPNSENSE_API_KEY='your-key' \
   --from-literal=OPNSENSE_API_SECRET='your-secret' \
-  --from-literal=HETZNER_DNS_TOKEN='your-token'
+  --from-literal=HCLOUD_TOKEN='your-token'
 ```
 
 2. Edit `k8s/config.yaml` with your settings
@@ -111,7 +125,7 @@ pip install -e ".[dev]"
 ```bash
 export OPNSENSE_API_KEY='your-key'
 export OPNSENSE_API_SECRET='your-secret'
-export HETZNER_DNS_TOKEN='your-token'
+export HCLOUD_TOKEN='your-token'
 ```
 
 3. Run:
@@ -140,7 +154,7 @@ docker build -t opnsense-dyndns-hetzner .
 docker run -v ./config.yaml:/etc/opnsense-dyndns-hetzner/config.yaml \
   -e OPNSENSE_API_KEY='your-key' \
   -e OPNSENSE_API_SECRET='your-secret' \
-  -e HETZNER_DNS_TOKEN='your-token' \
+  -e HCLOUD_TOKEN='your-token' \
   opnsense-dyndns-hetzner
 ```
 
@@ -167,17 +181,46 @@ options:
 1. **Query OPNsense**: Fetches current IP addresses for configured WAN interfaces via the OPNsense REST API
 2. **Query Hetzner DNS**: Fetches current A records for each configured hostname
 3. **Compare**: Checks if current DNS records match desired IPs
-4. **Update if needed**: Creates/updates/deletes A records to match desired state
-5. **Sleep**: Waits for the configured interval before repeating
+4. **Update if needed**: Creates/updates/deletes A records to match desired state using RRSet operations
+5. **Verify**: Queries Hetzner authoritative nameservers to confirm changes propagated
+6. **Sleep**: Waits for the configured interval before repeating
+
+### Features
+
+#### Rate Limiting
+
+API requests are rate-limited to 30 requests per minute to avoid hitting Hetzner API limits.
+
+#### Retry with Backoff
+
+Transient API failures (429, 5xx) are automatically retried with exponential backoff up to 3 times.
+
+#### DNS Verification
+
+After each update, the tool queries Hetzner's authoritative nameservers directly to verify the changes have propagated:
+- `helium.ns.hetzner.de`
+- `hydrogen.ns.hetzner.com`
+- `oxygen.ns.hetzner.com`
+
+#### Health Endpoints
+
+When `health_port` is configured, the following endpoints are available:
+
+| Endpoint | Purpose | Success | Failure |
+|----------|---------|---------|---------|
+| `/healthz` | Liveness probe | 200 OK | - |
+| `/readyz` | Readiness probe | 200 OK (APIs reachable) | 503 Service Unavailable |
 
 ### Logging
 
-- **DEBUG**: Logs when no changes are needed (skipped updates)
-- **INFO**: Logs when DNS records are created, updated, or deleted
-- **WARNING**: Logs missing interfaces or configuration issues
+- **DEBUG**: Logs when no changes are needed (skipped updates), detailed API calls
+- **INFO**: Logs each update cycle, DNS record changes, startup/shutdown
+- **WARNING**: Logs missing interfaces, DNS verification mismatches
 - **ERROR**: Logs API failures
 
-## OPNsense API Setup
+## API Setup
+
+### OPNsense API Setup
 
 1. Go to **System > Access > Users**
 2. Create a new user (or edit existing)
@@ -185,11 +228,36 @@ options:
 4. Go to **System > Access > Groups**
 5. Ensure the user has the `Diagnostics: Interface` privilege
 
-## Hetzner Cloud DNS API Setup
+### Hetzner Cloud API Setup
 
-1. Go to [Hetzner DNS Console](https://dns.hetzner.com/)
-2. Click on your profile > API Tokens
-3. Create a new token with read/write permissions
+1. Go to [Hetzner Cloud Console](https://console.hetzner.cloud/)
+2. Select your project
+3. Go to **Security > API Tokens**
+4. Create a new token with read/write permissions
+
+**Note**: This tool uses the new Hetzner Cloud API (`hcloud`), not the legacy DNS console API (`dns.hetzner.com`).
+
+## Development
+
+### Running Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+### Code Quality
+
+```bash
+# Linting
+ruff check .
+
+# Type checking
+mypy src/
+
+# Format check
+ruff format --check .
+```
 
 ## License
 

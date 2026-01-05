@@ -13,10 +13,13 @@ class OPNsenseClient:
 
     def __init__(self, config: OPNsenseConfig) -> None:
         self.config = config
-        self.base_url = config.url.rstrip("/")
+        base_url = config.url.rstrip("/")
+        if not base_url.endswith("/api"):
+            base_url = f"{base_url}/api"
+        self.base_url = base_url
         self._client = httpx.Client(
             auth=(config.key, config.secret),
-            verify=True,  # Set to False if using self-signed certs
+            verify=config.verify_ssl,
             timeout=30.0,
         )
 
@@ -39,7 +42,7 @@ class OPNsenseClient:
         """
         # Query OPNsense for interface information
         # The diagnostics/interface/getInterfaceConfig endpoint returns detailed interface info
-        url = f"{self.base_url}/api/diagnostics/interface/getInterfaceConfig"
+        url = f"{self.base_url}/diagnostics/interface/getInterfaceConfig"
 
         logger.debug("Querying OPNsense interface config", url=url)
         response = self._client.get(url)
@@ -91,3 +94,14 @@ class OPNsenseClient:
                 )
 
         return result
+
+    def health_check(self, timeout: float = 2.0) -> bool:
+        """Check if OPNsense API is accessible."""
+        try:
+            url = f"{self.base_url}/diagnostics/interface/getInterfaceConfig"
+            response = self._client.get(url, timeout=timeout)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error("OPNsense health check failed", error=str(e))
+            return False
