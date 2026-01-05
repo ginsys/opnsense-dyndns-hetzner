@@ -15,9 +15,54 @@ This tool queries OPNsense for WAN interface IP addresses and updates A records 
 - Rate limiting and retry with exponential backoff
 - Optional health endpoints for Kubernetes
 
+## Quick Start
+
+### Using Environment Variables Only
+
+The simplest way to run - no config file needed:
+
+```bash
+docker run --rm \
+  -e OPNSENSE_URL=https://opnsense.local/api \
+  -e OPNSENSE_API_KEY='your-key' \
+  -e OPNSENSE_API_SECRET='your-secret' \
+  -e OPNSENSE_INTERFACES='wan:igb0' \
+  -e OPNSENSE_VERIFY_SSL=false \
+  -e HCLOUD_TOKEN='your-token' \
+  -e HETZNER_ZONE=example.com \
+  -e RECORDS='home:wan' \
+  -e DRY_RUN=true \
+  ghcr.io/ginsys/opnsense-dyndns-hetzner:main \
+  --once --log-level debug
+```
+
+### Environment Variables Reference
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `OPNSENSE_URL` | Yes | OPNsense API base URL | `https://192.168.1.1/api` |
+| `OPNSENSE_API_KEY` | Yes | API key | |
+| `OPNSENSE_API_SECRET` | Yes | API secret | |
+| `OPNSENSE_INTERFACES` | Yes | Interface mappings (logical:opnsense) | `wan:igb0,backup:igb1` |
+| `OPNSENSE_VERIFY_SSL` | No | Verify SSL certs (default: true) | `false` |
+| `HCLOUD_TOKEN` | Yes | Hetzner Cloud API token | |
+| `HETZNER_ZONE` | Yes | DNS zone to manage | `example.com` |
+| `HETZNER_TTL` | No | TTL in seconds (default: 300) | `300` |
+| `RECORDS` | Yes | Record definitions | `home:wan,server:wan+backup` |
+| `INTERVAL` | No | Check interval seconds (default: 300) | `300` |
+| `DRY_RUN` | No | Don't make changes (default: false) | `true` |
+| `HEALTH_PORT` | No | HTTP health endpoint port | `8080` |
+| `VERIFY_DELAY` | No | Seconds before DNS verification | `2.0` |
+
+**Interface format**: `logical_name:opnsense_interface_name` - use the actual interface name from OPNsense (e.g., `igb0`, `em0`), not the friendly name.
+
+**Records format**: `hostname:interface1+interface2` - multiple interfaces create multiple A records.
+
 ## Configuration
 
-### Configuration File
+### Configuration File (Alternative)
+
+For more complex setups, use a YAML config file:
 
 ```yaml
 opnsense:
@@ -26,8 +71,8 @@ opnsense:
   secret: "${OPNSENSE_API_SECRET}"  # From environment variable
   verify_ssl: true                  # Set false for self-signed certs
   interfaces:
-    telenet: "wan"      # logical name -> OPNsense interface name
-    telenet2: "opt1"
+    wan: "igb0"       # logical name -> OPNsense interface name
+    backup: "igb1"
 
 hetzner:
   token: "${HCLOUD_TOKEN}"          # Hetzner Cloud API token
@@ -42,48 +87,50 @@ settings:
 
 records:
   - hostname: office
-    interfaces: [telenet2]          # Single interface -> 1 A record
+    interfaces: [backup]          # Single interface -> 1 A record
   - hostname: server
-    interfaces: [telenet, telenet2] # Both interfaces -> 2 A records
+    interfaces: [wan, backup]     # Both interfaces -> 2 A records
 ```
 
-### Environment Variables
+Run with config file:
 
-| Variable | Description |
-|----------|-------------|
-| `OPNSENSE_API_KEY` | OPNsense API key |
-| `OPNSENSE_API_SECRET` | OPNsense API secret |
-| `HCLOUD_TOKEN` | Hetzner Cloud API token |
+```bash
+docker run --rm \
+  -v ./config.yaml:/etc/opnsense-dyndns-hetzner/config.yaml:ro \
+  -e OPNSENSE_API_KEY='your-key' \
+  -e OPNSENSE_API_SECRET='your-secret' \
+  -e HCLOUD_TOKEN='your-token' \
+  ghcr.io/ginsys/opnsense-dyndns-hetzner:main
+```
 
 ### Finding OPNsense Interface Names
 
 To find the correct interface names for your OPNsense configuration:
 
-#### Option 1: Via OPNsense Web UI
-
-1. Go to **Interfaces > Overview**
-2. Note the interface identifiers (e.g., `wan`, `lan`, `opt1`, `opt2`)
-
-#### Option 2: Via OPNsense API
+#### Option 1: Via OPNsense API
 
 ```bash
-curl -u "API_KEY:API_SECRET" \
+curl -k -u "API_KEY:API_SECRET" \
   https://opnsense.local/api/diagnostics/interface/getInterfaceConfig \
   | jq 'keys'
 ```
 
-This will return a list like:
+This returns the actual interface names:
 ```json
-["lan", "lo0", "opt1", "wan"]
+["igb0", "igb1", "igb2", "lo0", "ovpns1"]
 ```
 
-#### Option 3: Via OPNsense Shell
+#### Option 2: Via OPNsense Web UI
 
-```bash
-# SSH into OPNsense
-ifconfig -l
-# or
-cat /conf/config.xml | grep -A5 "<interfaces>"
+1. Go to **Interfaces > Overview**
+2. Note the **Device** column (e.g., `igb0`, `em0`)
+
+#### Option 3: Run with Debug Logging
+
+If you use the wrong interface name, the tool will show available interfaces:
+
+```json
+{"logical_name": "wan", "opnsense_name": "wan", "available_interfaces": ["igb0", "igb1", "lo0"], "event": "Interface not found in OPNsense", "level": "warning"}
 ```
 
 ## Deployment
@@ -112,7 +159,23 @@ kubectl apply -k k8s/
 
 ### Local Development
 
-1. Create a virtual environment and install dependencies:
+Using the Makefile:
+
+```bash
+# Create virtual environment and install dependencies
+make venv
+
+# Activate (or use mise for auto-activation)
+source .venv/bin/activate
+
+# Run all checks
+make check
+
+# Run with example config
+make run
+```
+
+Or manually:
 
 ```bash
 python -m venv .venv
@@ -120,48 +183,20 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-2. Set environment variables:
-
-```bash
-export OPNSENSE_API_KEY='your-key'
-export OPNSENSE_API_SECRET='your-secret'
-export HCLOUD_TOKEN='your-token'
-```
-
-3. Run:
-
-```bash
-# Single run
-odh --config config.yaml --once
-
-# Dry run (no changes)
-odh --config config.yaml --once --dry-run
-
-# With debug logging
-odh --config config.yaml --once --log-level debug
-
-# Continuous mode
-odh --config config.yaml
-```
-
 ### Docker
 
 ```bash
-# Build
-docker build -t opnsense-dyndns-hetzner .
+# Build locally
+make build
 
-# Run
-docker run -v ./config.yaml:/etc/opnsense-dyndns-hetzner/config.yaml \
-  -e OPNSENSE_API_KEY='your-key' \
-  -e OPNSENSE_API_SECRET='your-secret' \
-  -e HCLOUD_TOKEN='your-token' \
-  opnsense-dyndns-hetzner
+# Or pull from registry
+docker pull ghcr.io/ginsys/opnsense-dyndns-hetzner:main
 ```
 
 ## CLI Options
 
 ```
-usage: odh [-h] --config CONFIG [--dry-run]
+usage: odh [-h] [--config CONFIG] [--dry-run]
            [--log-level {debug,info,warning,error}] [--once]
 
 Dynamic DNS updater for Hetzner Cloud DNS using OPNsense WAN IPs
@@ -169,7 +204,7 @@ Dynamic DNS updater for Hetzner Cloud DNS using OPNsense WAN IPs
 options:
   -h, --help            show this help message and exit
   --config CONFIG, -c CONFIG
-                        Path to configuration file
+                        Path to configuration file (optional if using environment variables)
   --dry-run             Don't make changes, just log what would be done
   --log-level {debug,info,warning,error}
                         Logging level (default: info)
@@ -213,10 +248,19 @@ When `health_port` is configured, the following endpoints are available:
 
 ### Logging
 
-- **DEBUG**: Logs when no changes are needed (skipped updates), detailed API calls
-- **INFO**: Logs each update cycle, DNS record changes, startup/shutdown
-- **WARNING**: Logs missing interfaces, DNS verification mismatches
-- **ERROR**: Logs API failures
+Output is JSON-formatted for easy parsing:
+
+```json
+{"zone": "example.com", "interval": 300, "dry_run": false, "event": "Starting opnsense-dyndns-hetzner", "level": "info"}
+{"hostname": "test", "current": [], "desired": ["1.2.3.4"], "event": "Syncing A records", "level": "info"}
+{"hostname": "test", "ips": ["1.2.3.4"], "event": "Created A record", "level": "info"}
+```
+
+Log levels:
+- **DEBUG**: Detailed API calls, skipped updates when no changes needed
+- **INFO**: Update cycles, DNS record changes, startup/shutdown
+- **WARNING**: Missing interfaces, DNS verification mismatches
+- **ERROR**: API failures
 
 ## API Setup
 
@@ -242,21 +286,22 @@ When `health_port` is configured, the following endpoints are available:
 ### Running Tests
 
 ```bash
-pip install -e ".[dev]"
-pytest
+make venv
+make check   # runs lint, typecheck, and tests
 ```
 
-### Code Quality
+Or individually:
 
 ```bash
-# Linting
-ruff check .
+make lint       # ruff check
+make typecheck  # mypy
+make test       # pytest
+```
 
-# Type checking
-mypy src/
+### Code Formatting
 
-# Format check
-ruff format --check .
+```bash
+make format
 ```
 
 ## License

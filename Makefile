@@ -1,4 +1,4 @@
-.PHONY: help venv venv-reset install dev test lint typecheck check format clean build run
+.PHONY: help venv venv-reset install dev test lint typecheck check format clean build run test-run
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -18,6 +18,7 @@ help:
 	@echo "  clean      - Remove build artifacts"
 	@echo "  build      - Build Docker image"
 	@echo "  run        - Run with example config (dry-run)"
+	@echo "  test-run   - Run container with .env config (dry-run, single iteration)"
 
 $(VENV)/bin/activate:
 	python3 -m venv $(VENV)
@@ -65,3 +66,12 @@ build:
 
 run: $(VENV)/bin/activate
 	$(VENV)/bin/odh --config config.example.yaml --once --dry-run --log-level debug
+
+test-run: build
+	@test -f .env || (echo "Error: .env file not found. Copy .env.example to .env and fill in values." && exit 1)
+	docker run --rm -it \
+		--env-file .env \
+		-v $(PWD)/config.test.yaml:/etc/opnsense-dyndns-hetzner/config.yaml:ro \
+		-p 8080:8080 \
+		$(IMAGE) \
+		--once --log-level debug

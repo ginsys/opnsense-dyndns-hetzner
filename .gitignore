@@ -39,7 +39,11 @@ htmlcov/
 
 # Local config with secrets (use config.example.yaml as template)
 config.yaml
+config.test.yaml
 !k8s/config.yaml
+
+# Environment files with secrets
+.env
 
 # Kubernetes secrets
 k8s/secret.yaml

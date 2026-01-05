@@ -91,3 +91,104 @@ def load_config(path: Path) -> Config:
     processed_config = _process_env_vars(raw_config)
 
     return Config.model_validate(processed_config)
+
+
+def _get_env(name: str, default: str | None = None) -> str:
+    """Get environment variable or raise if not set and no default."""
+    value = os.environ.get(name, default)
+    if value is None:
+        raise ValueError(f"Environment variable '{name}' is required")
+    return value
+
+
+def _get_env_int(name: str, default: int) -> int:
+    """Get environment variable as int."""
+    value = os.environ.get(name)
+    return int(value) if value else default
+
+
+def _get_env_float(name: str, default: float) -> float:
+    """Get environment variable as float."""
+    value = os.environ.get(name)
+    return float(value) if value else default
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+    """Get environment variable as bool."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes")
+
+
+def load_config_from_env() -> Config:
+    """Load configuration from environment variables.
+
+    Required environment variables:
+        OPNSENSE_URL: OPNsense API base URL
+        OPNSENSE_API_KEY: API key
+        OPNSENSE_API_SECRET: API secret
+        OPNSENSE_INTERFACES: Comma-separated interface mappings (e.g., "wan:wan,backup:opt1")
+        HCLOUD_TOKEN: Hetzner Cloud API token
+        HETZNER_ZONE: DNS zone (e.g., example.com)
+        RECORDS: Comma-separated record definitions (e.g., "home:wan,server:wan+backup")
+
+    Optional environment variables:
+        OPNSENSE_VERIFY_SSL: Verify SSL (default: true)
+        HETZNER_TTL: TTL in seconds (default: 300)
+        INTERVAL: Check interval in seconds (default: 300)
+        DRY_RUN: Don't make changes (default: false)
+        HEALTH_PORT: HTTP health port (default: none)
+        VERIFY_DELAY: Seconds before DNS verification (default: 2.0)
+    """
+    # Parse interface mappings: "wan:wan,backup:opt1" -> {"wan": "wan", "backup": "opt1"}
+    interfaces_str = _get_env("OPNSENSE_INTERFACES")
+    interfaces = {}
+    for mapping in interfaces_str.split(","):
+        mapping = mapping.strip()
+        if ":" in mapping:
+            name, iface = mapping.split(":", 1)
+            interfaces[name.strip()] = iface.strip()
+        else:
+            # If no colon, use same name for both
+            interfaces[mapping] = mapping
+
+    # Parse record definitions: "home:wan,server:wan+backup"
+    records_str = _get_env("RECORDS")
+    records = []
+    for record_def in records_str.split(","):
+        record_def = record_def.strip()
+        if ":" in record_def:
+            hostname, ifaces = record_def.split(":", 1)
+            iface_list = [i.strip() for i in ifaces.split("+")]
+        else:
+            raise ValueError(
+                f"Invalid record format '{record_def}', expected 'hostname:iface1+iface2'"
+            )
+        records.append(RecordConfig(hostname=hostname.strip(), interfaces=iface_list))
+
+    # Health port
+    health_port_str = os.environ.get("HEALTH_PORT")
+    health_port = int(health_port_str) if health_port_str else None
+
+    return Config(
+        opnsense=OPNsenseConfig(
+            url=_get_env("OPNSENSE_URL"),
+            key=_get_env("OPNSENSE_API_KEY"),
+            secret=_get_env("OPNSENSE_API_SECRET"),
+            verify_ssl=_get_env_bool("OPNSENSE_VERIFY_SSL", True),
+            interfaces=interfaces,
+        ),
+        hetzner=HetznerConfig(
+            token=_get_env("HCLOUD_TOKEN"),
+            zone=_get_env("HETZNER_ZONE"),
+            ttl=_get_env_int("HETZNER_TTL", 300),
+        ),
+        settings=SettingsConfig(
+            interval=_get_env_int("INTERVAL", 300),
+            dry_run=_get_env_bool("DRY_RUN", False),
+            health_port=health_port,
+            verify_delay=_get_env_float("VERIFY_DELAY", 2.0),
+        ),
+        records=records,
+    )

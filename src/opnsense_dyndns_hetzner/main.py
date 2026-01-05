@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import signal
 import sys
 import time
@@ -11,11 +12,18 @@ from pathlib import Path
 
 import structlog
 
-from .config import Config, load_config
+from .config import Config, load_config, load_config_from_env
 from .health import start_health_server
 from .hetzner import HetznerDNSClient
 from .opnsense import OPNsenseClient
 from .verify import verify_a_records
+
+LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+}
 
 
 def configure_logging(level: str) -> None:
@@ -29,7 +37,7 @@ def configure_logging(level: str) -> None:
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(structlog, level.upper(), structlog.INFO)
+            LOG_LEVELS.get(level.lower(), logging.INFO)
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
@@ -46,8 +54,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         "-c",
         type=Path,
-        required=True,
-        help="Path to configuration file",
+        help="Path to configuration file (optional if using environment variables)",
     )
     parser.add_argument(
         "--dry-run",
@@ -159,9 +166,9 @@ def main() -> None:
     configure_logging(args.log_level)
     logger = structlog.get_logger()
 
-    # Load configuration
+    # Load configuration from file or environment
     try:
-        config = load_config(args.config)
+        config = load_config(args.config) if args.config else load_config_from_env()
     except Exception as e:
         logger.error("Failed to load configuration", error=str(e))
         sys.exit(1)
