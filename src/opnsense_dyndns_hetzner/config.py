@@ -7,6 +7,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
+DEFAULT_CONFIG_PATH = Path("/etc/opnsense-dyndns-hetzner/config.yaml")
+
 
 class OPNsenseConfig(BaseModel):
     """OPNsense API configuration."""
@@ -192,3 +194,23 @@ def load_config_from_env() -> Config:
         ),
         records=records,
     )
+
+
+def load_config_auto(config_path: Path | None = None) -> tuple[Config, str]:
+    """Load configuration with auto-detection.
+
+    Priority:
+    1. Explicit config path (if provided via -c)
+    2. Default config file (if exists)
+    3. Environment variables only
+
+    Returns:
+        Tuple of (Config, source_description) for logging
+    """
+    if config_path:
+        return load_config(config_path), f"config file: {config_path}"
+
+    if DEFAULT_CONFIG_PATH.exists():
+        return load_config(DEFAULT_CONFIG_PATH), f"default config: {DEFAULT_CONFIG_PATH}"
+
+    return load_config_from_env(), "environment variables"

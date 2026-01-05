@@ -12,7 +12,7 @@ from pathlib import Path
 
 import structlog
 
-from .config import Config, load_config, load_config_from_env
+from .config import DEFAULT_CONFIG_PATH, Config, load_config_auto
 from .health import start_health_server
 from .hetzner import HetznerDNSClient
 from .opnsense import OPNsenseClient
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         "-c",
         type=Path,
-        help="Path to configuration file (optional if using environment variables)",
+        help=f"Path to config file (default: {DEFAULT_CONFIG_PATH} if exists, else env vars)",
     )
     parser.add_argument(
         "--dry-run",
@@ -168,10 +168,12 @@ def main() -> None:
 
     # Load configuration from file or environment
     try:
-        config = load_config(args.config) if args.config else load_config_from_env()
+        config, config_source = load_config_auto(args.config)
     except Exception as e:
         logger.error("Failed to load configuration", error=str(e))
         sys.exit(1)
+
+    logger.info("Configuration loaded", source=config_source)
 
     # Override dry_run from CLI if specified
     dry_run = args.dry_run or config.settings.dry_run

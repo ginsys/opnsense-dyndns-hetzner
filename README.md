@@ -60,19 +60,33 @@ docker run --rm \
 
 ## Configuration
 
-### Configuration File (Alternative)
+### Configuration Modes
 
-For more complex setups, use a YAML config file:
+The tool supports three configuration modes with the following priority:
+
+1. **Explicit config file**: `-c /path/to/config.yaml`
+2. **Default config file**: Auto-detected at `/etc/opnsense-dyndns-hetzner/config.yaml`
+3. **Environment variables only**: If no config file exists
+
+The tool logs which configuration source it uses at startup:
+
+```json
+{"source": "default config: /etc/opnsense-dyndns-hetzner/config.yaml", "event": "Configuration loaded", "level": "info"}
+```
+
+### Using a Config File
+
+For complex setups, use a YAML config file. Secrets can be injected via environment variables using `${VAR_NAME}` syntax:
 
 ```yaml
 opnsense:
   url: "https://opnsense.local/api"
   key: "${OPNSENSE_API_KEY}"        # From environment variable
   secret: "${OPNSENSE_API_SECRET}"  # From environment variable
-  verify_ssl: true                  # Set false for self-signed certs
+  verify_ssl: false                 # Set false for self-signed certs
   interfaces:
-    wan: "igb0"       # logical name -> OPNsense interface name
-    backup: "igb1"
+    wan1: "igb1"      # logical name -> OPNsense interface name
+    wan2: "vlan0.2"
 
 hetzner:
   token: "${HCLOUD_TOKEN}"          # Hetzner Cloud API token
@@ -82,17 +96,17 @@ hetzner:
 settings:
   interval: 300       # seconds between checks
   dry_run: false
-  health_port: null   # Set to 8080 to enable health endpoints
+  health_port: 8080   # Enable health endpoints
   verify_delay: 2.0   # seconds to wait before DNS verification
 
 records:
+  - hostname: home
+    interfaces: [wan1]            # Single interface -> 1 A record
   - hostname: office
-    interfaces: [backup]          # Single interface -> 1 A record
-  - hostname: server
-    interfaces: [wan, backup]     # Both interfaces -> 2 A records
+    interfaces: [wan1, wan2]      # Both interfaces -> 2 A records
 ```
 
-Run with config file:
+**Run with mounted config (auto-detected at default path):**
 
 ```bash
 docker run --rm \
@@ -100,7 +114,18 @@ docker run --rm \
   -e OPNSENSE_API_KEY='your-key' \
   -e OPNSENSE_API_SECRET='your-secret' \
   -e HCLOUD_TOKEN='your-token' \
-  ghcr.io/ginsys/opnsense-dyndns-hetzner:main
+  ghcr.io/ginsys/opnsense-dyndns-hetzner:latest --once
+```
+
+**Run with explicit config path:**
+
+```bash
+docker run --rm \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -e OPNSENSE_API_KEY='your-key' \
+  -e OPNSENSE_API_SECRET='your-secret' \
+  -e HCLOUD_TOKEN='your-token' \
+  ghcr.io/ginsys/opnsense-dyndns-hetzner:latest -c /app/config.yaml --once
 ```
 
 ### Finding OPNsense Interface Names
@@ -204,7 +229,8 @@ Dynamic DNS updater for Hetzner Cloud DNS using OPNsense WAN IPs
 options:
   -h, --help            show this help message and exit
   --config CONFIG, -c CONFIG
-                        Path to configuration file (optional if using environment variables)
+                        Path to config file (default: /etc/opnsense-dyndns-hetzner/config.yaml
+                        if exists, else env vars)
   --dry-run             Don't make changes, just log what would be done
   --log-level {debug,info,warning,error}
                         Logging level (default: info)
@@ -303,6 +329,28 @@ make test       # pytest
 ```bash
 make format
 ```
+
+### Releasing
+
+To create a new release:
+
+1. Update version in `pyproject.toml`
+2. Commit and push to main
+3. Create and push a tag:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+The CI workflow will automatically:
+- Run tests and linting
+- Build and push container images with version tags
+- Create a GitHub release with auto-generated notes
+
+Container tags created for `v0.1.0`:
+- `ghcr.io/ginsys/opnsense-dyndns-hetzner:0.1.0`
+- `ghcr.io/ginsys/opnsense-dyndns-hetzner:0.1`
+- `ghcr.io/ginsys/opnsense-dyndns-hetzner:latest`
 
 ## License
 
