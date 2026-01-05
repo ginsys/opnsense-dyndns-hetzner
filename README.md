@@ -74,6 +74,13 @@ The tool logs which configuration source it uses at startup:
 {"source": "default config: /etc/opnsense-dyndns-hetzner/config.yaml", "event": "Configuration loaded", "level": "info"}
 ```
 
+### Mixing Config File with Environment Variables
+
+When using a config file, you can reference environment variables using `${VAR_NAME}` syntax. This allows you to:
+- Keep non-sensitive configuration in version control
+- Inject secrets at runtime via environment variables
+- Use the same config file across different environments
+
 ### Using a Config File
 
 For complex setups, use a YAML config file. Secrets can be injected via environment variables using `${VAR_NAME}` syntax:
