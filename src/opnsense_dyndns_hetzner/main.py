@@ -143,7 +143,9 @@ def run_update(
 
         # Sync DNS records
         try:
-            changed = hetzner.sync_a_records(record.hostname, desired_ips, dry_run=dry_run)
+            changed = hetzner.sync_a_records(
+                record.hostname, desired_ips, dry_run=dry_run
+            )
 
             if changed:
                 any_changes = True
@@ -198,7 +200,7 @@ def main() -> None:
     configure_logging(args.log_level)
     logger = structlog.get_logger()
 
-    logger.info("opnsense-dyndns-hetzner starting", version="0.2.0-dev")
+    logger.info("opnsense-dyndns-hetzner starting", version="0.2.0")
 
     # Load configuration from file or environment
     try:
@@ -223,14 +225,19 @@ def main() -> None:
     shutdown = GracefulShutdown()
     health_server: HTTPServer | None = None
 
-    with OPNsenseClient(config.opnsense) as opnsense, HetznerDNSClient(config.hetzner) as hetzner:
+    with (
+        OPNsenseClient(config.opnsense) as opnsense,
+        HetznerDNSClient(config.hetzner) as hetzner,
+    ):
         # Start health server if configured
         if config.settings.health_port:
 
             def ready_check() -> bool:
                 return opnsense.health_check(timeout=2.0) and hetzner.health_check()
 
-            health_server = start_health_server(config.settings.health_port, ready_check)
+            health_server = start_health_server(
+                config.settings.health_port, ready_check
+            )
 
         iteration = 0
         while not shutdown.should_exit:
