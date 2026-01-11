@@ -160,7 +160,8 @@ def run_update(
                     set(desired_ips),
                 )
 
-            # If kubernetes integration is enabled and this is the trigger hostname, reconcile annotations
+            # If kubernetes integration is enabled and this is the trigger hostname,
+            # reconcile annotations
             if (
                 config.kubernetes.enabled
                 and record.hostname == config.kubernetes.trigger_hostname
