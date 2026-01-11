@@ -47,7 +47,21 @@ class RecordConfig(BaseModel):
     """DNS record configuration."""
 
     hostname: str = Field(description="Hostname (without zone suffix)")
-    interfaces: list[str] = Field(description="List of interface logical names")
+    interfaces: list[str] = Field(description="List of interface logical names)")
+
+
+class KubernetesConfig(BaseModel):
+    """Kubernetes integration configuration."""
+
+    enabled: bool = Field(default=False, description="Enable kubernetes annotation updates")
+    label_selector: str = Field(
+        default="ginsys.net/apex-dns=true",
+        description="Label selector for finding Ingress/HTTPRoute resources",
+    )
+    trigger_hostname: str = Field(
+        default="st32",
+        description="Only trigger updates when this hostname is synced",
+    )
 
 
 class Config(BaseModel):
@@ -56,6 +70,7 @@ class Config(BaseModel):
     opnsense: OPNsenseConfig
     hetzner: HetznerConfig
     settings: SettingsConfig = Field(default_factory=SettingsConfig)
+    kubernetes: KubernetesConfig = Field(default_factory=KubernetesConfig)
     records: list[RecordConfig]
 
 

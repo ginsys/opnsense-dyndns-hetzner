@@ -1,6 +1,6 @@
 [project]
 name = "opnsense-dyndns-hetzner"
-version = "0.1.0"
+version = "0.2.0-dev"
 description = "Dynamic DNS updater for Hetzner Cloud DNS using OPNsense WAN interface IPs"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "structlog>=24.0",
+    "kubernetes>=30.0",
 ]
 
 [project.optional-dependencies]

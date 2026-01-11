@@ -15,6 +15,7 @@ import structlog
 from .config import DEFAULT_CONFIG_PATH, Config, load_config_auto
 from .health import start_health_server
 from .hetzner import HetznerDNSClient
+from .kubernetes_updater import update_apex_dns_annotations
 from .opnsense import OPNsenseClient
 from .verify import verify_a_records
 
@@ -152,6 +153,30 @@ def run_update(
                     config.hetzner.zone,
                     set(desired_ips),
                 )
+
+            # If kubernetes integration is enabled and this is the trigger hostname, update annotations
+            if (
+                changed
+                and config.kubernetes.enabled
+                and record.hostname == config.kubernetes.trigger_hostname
+            ):
+                logger.info(
+                    "Triggering kubernetes annotation update",
+                    hostname=record.hostname,
+                    ips=desired_ips,
+                )
+                try:
+                    update_apex_dns_annotations(
+                        ips=desired_ips,
+                        label_selector=config.kubernetes.label_selector,
+                        dry_run=dry_run,
+                    )
+                except Exception as k8s_error:
+                    logger.error(
+                        "Failed to update kubernetes annotations",
+                        hostname=record.hostname,
+                        error=str(k8s_error),
+                    )
         except Exception as e:
             logger.error(
                 "Failed to sync DNS records",
