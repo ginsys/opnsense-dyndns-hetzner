@@ -14,6 +14,7 @@ This tool queries OPNsense for WAN interface IP addresses and updates A records 
 - DNS verification after updates
 - Rate limiting and retry with exponential backoff
 - Optional health endpoints for Kubernetes
+- Kubernetes Ingress/HTTPRoute annotation updates for apex domains
 
 ## Quick Start
 
@@ -105,6 +106,11 @@ settings:
   dry_run: false
   health_port: 8080   # Enable health endpoints
   verify_delay: 2.0   # seconds to wait before DNS verification
+
+kubernetes:
+  enabled: false              # Set true to enable Kubernetes integration
+  label_selector: "ginsys.net/apex-dns=true"
+  trigger_hostname: "lb"      # Hostname that triggers annotation updates
 
 records:
   - hostname: home
@@ -278,6 +284,82 @@ When `health_port` is configured, the following endpoints are available:
 |----------|---------|---------|---------|
 | `/healthz` | Liveness probe | 200 OK | - |
 | `/readyz` | Readiness probe | 200 OK (APIs reachable) | 503 Service Unavailable |
+
+#### Kubernetes Integration
+
+The tool can automatically update external-dns annotations on Kubernetes Ingress and HTTPRoute resources when DNS records change. This is useful for apex domains that require A records instead of CNAMEs.
+
+**Configuration:**
+
+```yaml
+kubernetes:
+  enabled: true                          # Enable kubernetes integration
+  label_selector: "ginsys.net/apex-dns=true"  # Resources with this label will be updated
+  trigger_hostname: "lb"                 # Only trigger when this hostname's DNS changes
+```
+
+**How it works:**
+
+1. When the specified `trigger_hostname` DNS record is updated, the tool queries Kubernetes for Ingress and HTTPRoute resources matching `label_selector`
+2. Updates their `external-dns.alpha.kubernetes.io/target` annotation with the new IP addresses
+3. external-dns then creates A records instead of CNAME records for apex domains
+
+**Requirements:**
+
+- ServiceAccount with permissions to list and patch Ingress and HTTPRoute resources
+- Resources must be labeled with the configured label selector
+- Requires `kubernetes>=30.0` Python package (included)
+
+**Example Ingress:**
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app
+  labels:
+    ginsys.net/apex-dns: "true"  # Will be updated by opnsense-dyndns-hetzner
+  annotations:
+    # annotation will be set automatically - no need to specify in manifest
+spec:
+  ingressClassName: nginx-external
+  rules:
+    - host: example.com  # apex domain
+```
+
+**RBAC Example:**
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opnsense-dyndns-hetzner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opnsense-dyndns-hetzner
+rules:
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "patch"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opnsense-dyndns-hetzner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: opnsense-dyndns-hetzner
+subjects:
+- kind: ServiceAccount
+  name: opnsense-dyndns-hetzner
+  namespace: default
+```
 
 ### Logging
 
