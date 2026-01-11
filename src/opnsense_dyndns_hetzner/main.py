@@ -98,6 +98,7 @@ def run_update(
 ) -> None:
     """Run a single update cycle."""
     logger = structlog.get_logger()
+    any_changes = False
 
     # Get current IPs from OPNsense
     try:
@@ -144,6 +145,9 @@ def run_update(
         try:
             changed = hetzner.sync_a_records(record.hostname, desired_ips, dry_run=dry_run)
 
+            if changed:
+                any_changes = True
+
             # Verify DNS if changes were made (and not dry run)
             if changed and not dry_run:
                 # Wait for DNS propagation before verification
@@ -184,6 +188,9 @@ def run_update(
                 error=str(e),
             )
 
+    if not any_changes:
+        logger.debug("No DNS changes needed, all records up to date")
+
 
 def main() -> None:
     """Main entry point."""
@@ -191,14 +198,15 @@ def main() -> None:
     configure_logging(args.log_level)
     logger = structlog.get_logger()
 
+    logger.info("opnsense-dyndns-hetzner starting", version="0.2.0-dev")
+
     # Load configuration from file or environment
     try:
         config, config_source = load_config_auto(args.config)
+        logger.info("Configuration loaded", source=config_source)
     except Exception as e:
         logger.error("Failed to load configuration", error=str(e))
         sys.exit(1)
-
-    logger.info("Configuration loaded", source=config_source)
 
     # Override dry_run from CLI if specified
     dry_run = args.dry_run or config.settings.dry_run
