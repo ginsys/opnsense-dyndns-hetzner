@@ -158,16 +158,16 @@ def run_update(
                     set(desired_ips),
                 )
 
-            # If kubernetes integration is enabled and this is the trigger hostname, update annotations
+            # If kubernetes integration is enabled and this is the trigger hostname, reconcile annotations
             if (
-                changed
-                and config.kubernetes.enabled
+                config.kubernetes.enabled
                 and record.hostname == config.kubernetes.trigger_hostname
             ):
                 logger.info(
-                    "Triggering kubernetes annotation update",
+                    "Reconciling kubernetes annotations",
                     hostname=record.hostname,
                     ips=desired_ips,
+                    changed=changed,
                 )
                 try:
                     update_apex_dns_annotations(
