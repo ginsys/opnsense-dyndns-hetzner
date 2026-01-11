@@ -189,7 +189,7 @@ def run_update(
             )
 
     if not any_changes:
-        logger.debug("No DNS changes needed, all records up to date")
+        logger.info("No DNS changes needed, all records up to date")
 
 
 def main() -> None:
