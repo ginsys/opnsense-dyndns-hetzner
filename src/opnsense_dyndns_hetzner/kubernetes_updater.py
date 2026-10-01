@@ -79,6 +79,11 @@ def update_apex_dns_annotations(
     return updated
 
 
+def _previous_target(current: dict[str, str | None]) -> str | None:
+    """Return the first set value in key order, keeping the `old` log field a string or null."""
+    return next((value for value in current.values() if value is not None), None)
+
+
 def _update_ingresses(
     networking_v1_api: client.NetworkingV1Api,
     label_selector: str,
@@ -116,7 +121,8 @@ def _update_ingresses(
             "Updating ingress annotation",
             namespace=namespace,
             name=name,
-            old=current,
+            old=_previous_target(current),
+            old_by_key=current,
             new=target_value,
             dry_run=dry_run,
         )
@@ -188,7 +194,8 @@ def _update_httproutes(
             "Updating httproute annotation",
             namespace=namespace,
             name=name,
-            old=current,
+            old=_previous_target(current),
+            old_by_key=current,
             new=target_value,
             dry_run=dry_run,
         )

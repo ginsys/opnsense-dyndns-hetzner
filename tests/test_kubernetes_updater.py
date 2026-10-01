@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from structlog.testing import capture_logs
+
 from opnsense_dyndns_hetzner.kubernetes_updater import (
     TARGET_ANNOTATION_KEYS,
     _update_httproutes,
@@ -119,6 +121,17 @@ class TestUpdateIngresses:
         assert run_ingresses(api, dry_run=True) is True
         api.patch_namespaced_ingress.assert_not_called()
 
+    def test_update_log_keeps_scalar_old(self) -> None:
+        """The `old` log field stays a string; per-key values go to `old_by_key`."""
+        api = make_networking_api({ALPHA_KEY: STALE})
+
+        with capture_logs() as logs:
+            run_ingresses(api, dry_run=True)
+
+        event = next(e for e in logs if e["event"] == "Updating ingress annotation")
+        assert event["old"] == STALE
+        assert event["old_by_key"] == {NEW_KEY: None, ALPHA_KEY: STALE}
+
 
 class TestUpdateHttproutes:
     """Tests for _update_httproutes."""
@@ -150,6 +163,17 @@ class TestUpdateHttproutes:
 
         assert run_httproutes(api) is True
         assert_patched_both_keys(api.patch_namespaced_custom_object)
+
+    def test_update_log_keeps_scalar_old(self) -> None:
+        """The `old` log field is null when no key is set; per-key values go to `old_by_key`."""
+        api = make_custom_api(None)
+
+        with capture_logs() as logs:
+            run_httproutes(api, dry_run=True)
+
+        event = next(e for e in logs if e["event"] == "Updating httproute annotation")
+        assert event["old"] is None
+        assert event["old_by_key"] == {NEW_KEY: None, ALPHA_KEY: None}
 
 
 class TestUpdateApexDnsAnnotations:
