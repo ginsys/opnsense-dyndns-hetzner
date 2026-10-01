@@ -201,7 +201,7 @@ def main() -> None:
     configure_logging(args.log_level)
     logger = structlog.get_logger()
 
-    logger.info("opnsense-dyndns-hetzner starting", version="0.2.0")
+    logger.info("opnsense-dyndns-hetzner starting", version="0.3.0")
 
     # Load configuration from file or environment
     try:
