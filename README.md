@@ -301,7 +301,7 @@ kubernetes:
 **How it works:**
 
 1. When the specified `trigger_hostname` DNS record is updated, the tool queries Kubernetes for Ingress and HTTPRoute resources matching `label_selector`
-2. Sets their target annotation to the new IP addresses, under both `external-dns.kubernetes.io/target` (read by external-dns >= 0.22) and `external-dns.alpha.kubernetes.io/target` (read when external-dns runs with `--annotation-prefix=external-dns.alpha.kubernetes.io/`), in one patch per resource. The alpha key is transitional and will be dropped in a later release
+2. Sets their `external-dns.kubernetes.io/target` annotation (read by external-dns >= 0.22) to the new IP addresses, in one patch per resource. The same patch removes `external-dns.alpha.kubernetes.io/target`, which 0.3.0 also wrote
 3. external-dns then creates A records instead of CNAME records for apex domains
 
 **Requirements:**

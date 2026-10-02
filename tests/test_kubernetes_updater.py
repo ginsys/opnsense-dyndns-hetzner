@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from kubernetes.client import ApiClient
 from structlog.testing import capture_logs
 
 from opnsense_dyndns_hetzner.kubernetes_updater import (
-    TARGET_ANNOTATION_KEYS,
+    STALE_ANNOTATION_KEYS,
+    TARGET_ANNOTATION_KEY,
     _update_httproutes,
     _update_ingresses,
     update_apex_dns_annotations,
@@ -19,6 +22,7 @@ ALPHA_KEY = "external-dns.alpha.kubernetes.io/target"
 TARGET = "1.2.3.4,5.6.7.8"
 STALE = "9.9.9.9"
 SELECTOR = "ginsys.net/apex-dns=true"
+EXPECTED_BODY = {"metadata": {"annotations": {NEW_KEY: TARGET, ALPHA_KEY: None}}}
 
 
 def make_networking_api(annotations: dict[str, str] | None) -> MagicMock:
@@ -49,7 +53,6 @@ def run_ingresses(api: MagicMock, dry_run: bool = False) -> bool:
     return _update_ingresses(
         networking_v1_api=api,
         label_selector=SELECTOR,
-        annotation_keys=TARGET_ANNOTATION_KEYS,
         target_value=TARGET,
         dry_run=dry_run,
     )
@@ -60,59 +63,72 @@ def run_httproutes(api: MagicMock, dry_run: bool = False) -> bool:
     return _update_httproutes(
         custom_api=api,
         label_selector=SELECTOR,
-        annotation_keys=TARGET_ANNOTATION_KEYS,
         target_value=TARGET,
         dry_run=dry_run,
     )
 
 
-def assert_patched_both_keys(patch_call: MagicMock) -> None:
-    """Assert exactly one patch was sent and it sets both target keys."""
+def assert_patched(patch_call: MagicMock) -> None:
+    """Assert exactly one patch was sent: the new key set, the alpha key deleted."""
     patch_call.assert_called_once()
-    body = patch_call.call_args.kwargs["body"]
-    assert body == {"metadata": {"annotations": {NEW_KEY: TARGET, ALPHA_KEY: TARGET}}}
+    assert patch_call.call_args.kwargs["body"] == EXPECTED_BODY
     assert patch_call.call_args.kwargs["name"] == "apex"
     assert patch_call.call_args.kwargs["namespace"] == "web"
 
 
-class TestTargetAnnotationKeys:
-    """Tests for the transitional key set."""
+class TestAnnotationKeys:
+    """Tests for the key constants and the wire form of the patch."""
 
-    def test_both_prefixes(self) -> None:
-        """Both the new and the alpha prefix are written."""
-        assert set(TARGET_ANNOTATION_KEYS) == {NEW_KEY, ALPHA_KEY}
+    def test_keys(self) -> None:
+        """Only the new prefix is written; the alpha prefix is the one stale key."""
+        assert TARGET_ANNOTATION_KEY == NEW_KEY
+        assert STALE_ANNOTATION_KEYS == (ALPHA_KEY,)
+
+    def test_stale_key_serializes_as_null(self) -> None:
+        """The client keeps the None value, so the merge patch carries a JSON null (a delete)."""
+        wire = ApiClient().sanitize_for_serialization(EXPECTED_BODY)
+        assert json.loads(json.dumps(wire)) == {
+            "metadata": {"annotations": {NEW_KEY: TARGET, ALPHA_KEY: None}}
+        }
 
 
 class TestUpdateIngresses:
     """Tests for _update_ingresses."""
 
-    def test_neither_key_patches_both(self) -> None:
-        """An ingress with no annotations gets one patch carrying both keys."""
+    def test_no_annotations_patched(self) -> None:
+        """An ingress with no annotations gets one patch setting the new key."""
         api = make_networking_api(None)
 
         assert run_ingresses(api) is True
-        assert_patched_both_keys(api.patch_namespaced_ingress)
+        assert_patched(api.patch_namespaced_ingress)
 
-    def test_both_keys_current_not_patched(self) -> None:
-        """An ingress with both keys at the target is left alone."""
-        api = make_networking_api({NEW_KEY: TARGET, ALPHA_KEY: TARGET})
+    def test_new_key_current_not_patched(self) -> None:
+        """An ingress with the new key at the target and no alpha key is left alone."""
+        api = make_networking_api({NEW_KEY: TARGET, "other": "x"})
 
         assert run_ingresses(api) is False
         api.patch_namespaced_ingress.assert_not_called()
 
-    def test_only_alpha_key_current_patches_both(self) -> None:
-        """An ingress with only the alpha key at the target is patched on both keys."""
+    def test_both_keys_current_removes_alpha(self) -> None:
+        """An ingress carrying both keys at the target (as 0.3.0 left it) loses the alpha key."""
+        api = make_networking_api({NEW_KEY: TARGET, ALPHA_KEY: TARGET})
+
+        assert run_ingresses(api) is True
+        assert_patched(api.patch_namespaced_ingress)
+
+    def test_only_alpha_key_patched(self) -> None:
+        """An ingress with only the alpha key at the target gets the new key, alpha removed."""
         api = make_networking_api({ALPHA_KEY: TARGET})
 
         assert run_ingresses(api) is True
-        assert_patched_both_keys(api.patch_namespaced_ingress)
+        assert_patched(api.patch_namespaced_ingress)
 
-    def test_only_new_key_current_patches_both(self) -> None:
-        """An ingress with only the new key at the target is patched on both keys."""
-        api = make_networking_api({NEW_KEY: TARGET, ALPHA_KEY: STALE})
+    def test_new_key_stale_patched(self) -> None:
+        """An ingress whose new key holds an old target is patched."""
+        api = make_networking_api({NEW_KEY: STALE})
 
         assert run_ingresses(api) is True
-        assert_patched_both_keys(api.patch_namespaced_ingress)
+        assert_patched(api.patch_namespaced_ingress)
 
     def test_dry_run_does_not_patch(self) -> None:
         """Dry run reports an update without patching."""
@@ -136,33 +152,33 @@ class TestUpdateIngresses:
 class TestUpdateHttproutes:
     """Tests for _update_httproutes."""
 
-    def test_neither_key_patches_both(self) -> None:
-        """An HTTPRoute with no annotations gets one patch carrying both keys."""
+    def test_no_annotations_patched(self) -> None:
+        """An HTTPRoute with no annotations gets one patch setting the new key."""
         api = make_custom_api(None)
 
         assert run_httproutes(api) is True
-        assert_patched_both_keys(api.patch_namespaced_custom_object)
+        assert_patched(api.patch_namespaced_custom_object)
 
-    def test_both_keys_current_not_patched(self) -> None:
-        """An HTTPRoute with both keys at the target is left alone."""
-        api = make_custom_api({NEW_KEY: TARGET, ALPHA_KEY: TARGET})
+    def test_new_key_current_not_patched(self) -> None:
+        """An HTTPRoute with the new key at the target and no alpha key is left alone."""
+        api = make_custom_api({NEW_KEY: TARGET})
 
         assert run_httproutes(api) is False
         api.patch_namespaced_custom_object.assert_not_called()
 
-    def test_only_alpha_key_current_patches_both(self) -> None:
-        """An HTTPRoute with only the alpha key at the target is patched on both keys."""
+    def test_both_keys_current_removes_alpha(self) -> None:
+        """An HTTPRoute carrying both keys at the target (as 0.3.0 left it) loses the alpha key."""
+        api = make_custom_api({NEW_KEY: TARGET, ALPHA_KEY: TARGET})
+
+        assert run_httproutes(api) is True
+        assert_patched(api.patch_namespaced_custom_object)
+
+    def test_only_alpha_key_patched(self) -> None:
+        """An HTTPRoute with only the alpha key at the target gets the new key, alpha removed."""
         api = make_custom_api({ALPHA_KEY: TARGET})
 
         assert run_httproutes(api) is True
-        assert_patched_both_keys(api.patch_namespaced_custom_object)
-
-    def test_only_new_key_current_patches_both(self) -> None:
-        """An HTTPRoute with only the new key at the target is patched on both keys."""
-        api = make_custom_api({NEW_KEY: TARGET})
-
-        assert run_httproutes(api) is True
-        assert_patched_both_keys(api.patch_namespaced_custom_object)
+        assert_patched(api.patch_namespaced_custom_object)
 
     def test_update_log_keeps_scalar_old(self) -> None:
         """The `old` log field is null when no key is set; per-key values go to `old_by_key`."""
@@ -179,8 +195,8 @@ class TestUpdateHttproutes:
 class TestUpdateApexDnsAnnotations:
     """Tests for update_apex_dns_annotations wiring."""
 
-    def test_writes_both_keys_on_both_resource_kinds(self) -> None:
-        """The public entry point patches ingresses and HTTPRoutes with both keys."""
+    def test_patches_both_resource_kinds(self) -> None:
+        """The public entry point patches ingresses and HTTPRoutes."""
         networking_api = make_networking_api(None)
         custom_api = make_custom_api(None)
 
@@ -197,5 +213,5 @@ class TestUpdateApexDnsAnnotations:
         ):
             assert update_apex_dns_annotations(["5.6.7.8", "1.2.3.4"], SELECTOR) is True
 
-        assert_patched_both_keys(networking_api.patch_namespaced_ingress)
-        assert_patched_both_keys(custom_api.patch_namespaced_custom_object)
+        assert_patched(networking_api.patch_namespaced_ingress)
+        assert_patched(custom_api.patch_namespaced_custom_object)
