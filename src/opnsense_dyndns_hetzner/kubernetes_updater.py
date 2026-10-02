@@ -6,13 +6,13 @@ from kubernetes.client.rest import ApiException
 
 logger = structlog.get_logger(__name__)
 
-# Transition: write the target under both prefixes. external-dns >= 0.22 reads the new one; a
-# cluster running it with `--annotation-prefix=external-dns.alpha.kubernetes.io/` reads the alpha
-# one. Drop the alpha key once the consuming cluster no longer sets `--annotation-prefix`.
-TARGET_ANNOTATION_KEYS: tuple[str, ...] = (
-    "external-dns.kubernetes.io/target",
-    "external-dns.alpha.kubernetes.io/target",
-)
+# external-dns >= 0.22 reads the target from this key.
+TARGET_ANNOTATION_KEY = "external-dns.kubernetes.io/target"
+
+# Keys earlier releases also wrote: 0.3.0 wrote the alpha prefix for clusters running external-dns
+# with `--annotation-prefix=external-dns.alpha.kubernetes.io/`. Every patch removes them (a merge
+# patch `null`), so a stale target does not linger on the resource.
+STALE_ANNOTATION_KEYS: tuple[str, ...] = ("external-dns.alpha.kubernetes.io/target",)
 
 
 def update_apex_dns_annotations(
@@ -23,10 +23,9 @@ def update_apex_dns_annotations(
     """
     Update the external-dns target annotation on labeled resources.
 
-    The target is written under every key in TARGET_ANNOTATION_KEYS
-    (`external-dns.kubernetes.io/target` and `external-dns.alpha.kubernetes.io/target`)
-    in a single patch per resource. A resource is left alone only when all keys already
-    equal the target value.
+    The target is written under TARGET_ANNOTATION_KEY (`external-dns.kubernetes.io/target`),
+    and the same patch removes every key in STALE_ANNOTATION_KEYS. A resource is left alone
+    only when the target key already equals the target value and no stale key is present.
 
     Args:
         ips: List of IP addresses to set as target
@@ -62,7 +61,6 @@ def update_apex_dns_annotations(
     updated |= _update_ingresses(
         networking_v1_api=client.NetworkingV1Api(),
         label_selector=label_selector,
-        annotation_keys=TARGET_ANNOTATION_KEYS,
         target_value=target_value,
         dry_run=dry_run,
     )
@@ -71,12 +69,30 @@ def update_apex_dns_annotations(
     updated |= _update_httproutes(
         custom_api=client.CustomObjectsApi(),
         label_selector=label_selector,
-        annotation_keys=TARGET_ANNOTATION_KEYS,
         target_value=target_value,
         dry_run=dry_run,
     )
 
     return updated
+
+
+def _current_annotations(annotations: dict[str, str]) -> dict[str, str | None]:
+    """Return the target key and every stale key, each with its value or None when unset."""
+    return {key: annotations.get(key) for key in (TARGET_ANNOTATION_KEY, *STALE_ANNOTATION_KEYS)}
+
+
+def _is_current(current: dict[str, str | None], target_value: str) -> bool:
+    """True when the target key holds the target and no stale key is present."""
+    return current[TARGET_ANNOTATION_KEY] == target_value and all(
+        current[key] is None for key in STALE_ANNOTATION_KEYS
+    )
+
+
+def _patch_body(target_value: str) -> dict[str, dict[str, dict[str, str | None]]]:
+    """Set the target key and delete every stale key, in one merge patch."""
+    annotations: dict[str, str | None] = dict.fromkeys(STALE_ANNOTATION_KEYS)
+    annotations[TARGET_ANNOTATION_KEY] = target_value
+    return {"metadata": {"annotations": annotations}}
 
 
 def _previous_target(current: dict[str, str | None]) -> str | None:
@@ -87,11 +103,10 @@ def _previous_target(current: dict[str, str | None]) -> str | None:
 def _update_ingresses(
     networking_v1_api: client.NetworkingV1Api,
     label_selector: str,
-    annotation_keys: tuple[str, ...],
     target_value: str,
     dry_run: bool,
 ) -> bool:
-    """Update Ingress resources with the target annotations."""
+    """Update Ingress resources with the target annotation."""
     updated = False
 
     try:
@@ -105,10 +120,9 @@ def _update_ingresses(
     for ing in ingresses.items:
         namespace = ing.metadata.namespace
         name = ing.metadata.name
-        annotations = ing.metadata.annotations or {}
-        current = {key: annotations.get(key) for key in annotation_keys}
+        current = _current_annotations(ing.metadata.annotations or {})
 
-        if all(value == target_value for value in current.values()):
+        if _is_current(current, target_value):
             logger.debug(
                 "Ingress annotation already up-to-date",
                 namespace=namespace,
@@ -129,16 +143,10 @@ def _update_ingresses(
 
         if not dry_run:
             try:
-                # Patch all target annotation keys in one request
-                body = {
-                    "metadata": {
-                        "annotations": dict.fromkeys(annotation_keys, target_value)
-                    }
-                }
                 networking_v1_api.patch_namespaced_ingress(
                     name=name,
                     namespace=namespace,
-                    body=body,
+                    body=_patch_body(target_value),
                 )
                 updated = True
             except ApiException as e:
@@ -157,11 +165,10 @@ def _update_ingresses(
 def _update_httproutes(
     custom_api: client.CustomObjectsApi,
     label_selector: str,
-    annotation_keys: tuple[str, ...],
     target_value: str,
     dry_run: bool,
 ) -> bool:
-    """Update HTTPRoute resources with the target annotations."""
+    """Update HTTPRoute resources with the target annotation."""
     updated = False
 
     try:
@@ -178,10 +185,9 @@ def _update_httproutes(
     for route in httproutes.get("items", []):
         namespace = route["metadata"]["namespace"]
         name = route["metadata"]["name"]
-        annotations = route.get("metadata", {}).get("annotations", {})
-        current = {key: annotations.get(key) for key in annotation_keys}
+        current = _current_annotations(route.get("metadata", {}).get("annotations", {}))
 
-        if all(value == target_value for value in current.values()):
+        if _is_current(current, target_value):
             logger.debug(
                 "HTTPRoute annotation already up-to-date",
                 namespace=namespace,
@@ -202,19 +208,13 @@ def _update_httproutes(
 
         if not dry_run:
             try:
-                # Patch all target annotation keys in one request
-                body = {
-                    "metadata": {
-                        "annotations": dict.fromkeys(annotation_keys, target_value)
-                    }
-                }
                 custom_api.patch_namespaced_custom_object(
                     group="gateway.networking.k8s.io",
                     version="v1",
                     plural="httproutes",
                     name=name,
                     namespace=namespace,
-                    body=body,
+                    body=_patch_body(target_value),
                 )
                 updated = True
             except ApiException as e:
